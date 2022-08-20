@@ -1,0 +1,66 @@
+# This folder is cached between builds
+# http://docs.gitlab.com/ce/ci/yaml/README.html#cache
+cache:
+  paths:
+    - node_modules/
+
+stages:
+  - test
+  - coverage
+  - deploy
+
+test:
+  stage: test
+  image: node:latest
+  environment:
+    name: development
+  script:
+    - npm install
+    - npm test
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    paths:
+      - coverage/
+
+pages:
+  stage: coverage
+  image: node:latest
+  dependencies:
+    - test
+  script:
+    - mv coverage/lcov-report/ public/
+  artifacts:
+    paths:
+      - public
+    expire_in: 30 days
+
+deploy:
+  stage: deploy
+  image: google/cloud-sdk:alpine
+  environment:
+    name: production
+  before_script:
+    - printf '\http://dl-cdn.alpinelinux.org/alpine/latest-stable/community >> /etc/apk/repositories'
+    - apk update
+    - apk add nodejs
+    - apk add npm
+    - echo $GCP_SERVICE_ACCOUNT > /tmp/$CI_PIPELINE_ID.json
+    - gcloud auth activate-service-account --key-file /tmp/$CI_PIPELINE_ID.json
+  script:
+    - npm install
+    - npm run build
+    - cp package.json dist/src/package.json
+    - >
+        gcloud functions deploy
+        add-phrase-http-cloud-function
+        --quiet
+        --project $GCP_PROJECT_ID
+        --runtime nodejs10
+        --trigger-http
+        --source=./dist/src
+        --entry-point addPhrase
+        --set-env-vars GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_STORAGE_NAME=${GCP_STORAGE_NAME}
+  only:
+    - master
+  after_script:
+    - rm /tmp/$CI_PIPELINE_ID.json
